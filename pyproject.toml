@@ -1,0 +1,38 @@
+# pyproject.toml
+# ----------------------------------------------------------------------------
+# Project definition: name, Python version, dependencies, and the `secreview`
+# command. Versions are pinned exactly (==) so anyone installing this gets the
+# same libraries the tests were run with.
+# ----------------------------------------------------------------------------
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secreview"
+version = "0.1.0"
+description = "Multi-agent security reviewer for public GitHub repositories (Python code)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic==2.14.4",   # schemas + validation of model output and the report
+    "pyyaml==6.0.4",      # reads config.yaml (limits, timeouts, model name)
+    "openai==3.60.0",     # the only LLM SDK; imported in one file only
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",      # tests run offline, with a fake LLM client
+]
+
+# Installing the project creates a `secreview` terminal command that calls
+# secreview.cli:main (added in a later commit).
+[project.scripts]
+secreview = "secreview.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
