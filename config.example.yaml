@@ -1,0 +1,38 @@
+# config.example.yaml
+# ----------------------------------------------------------------------------
+# Example configuration. Copy it to `config.yaml` and adjust as needed.
+# This file contains NO secrets: the API key is read from the OPENAI_API_KEY
+# environment variable (or a local .env file), never from here.
+# Unknown keys are rejected, so a typo fails fast instead of being ignored.
+# ----------------------------------------------------------------------------
+
+model:
+  # Any chat model your OpenAI account can use (check the OpenAI dashboard).
+  name: gpt-5-mini
+  # Seconds to wait for one model response before giving up.
+  request_timeout_seconds: 60
+  # Automatic retries for timeouts, rate limits (429) and server errors (5xx).
+  max_retries: 2
+
+repository:
+  # Seconds allowed for `git clone` before the review is marked failed.
+  clone_timeout_seconds: 120
+
+limits:
+  # Files bigger than this are skipped (often generated or vendored code).
+  max_file_bytes: 100000
+  # At most this many Python files are analysed; the rest are reported as skipped.
+  max_files: 40
+  # Total characters of source code sent to the Investigator across all chunks.
+  max_total_chars: 400000
+  # Size of one chunk (one Investigator task). Must fit in the model's context
+  # window together with the prompt and tool results.
+  chunk_chars: 20000
+  # Hard ceiling on model requests for the whole review (both agents, all
+  # tool rounds). When reached, remaining work is reported as not reviewed.
+  max_model_calls: 60
+  # Tool calls one agent may make while working on one task.
+  investigator_max_tool_calls: 3
+  reviewer_max_tool_calls: 5
+  # Characters returned by one tool call (protects the context window).
+  tool_output_max_chars: 4000

@@ -19,6 +19,7 @@ dependencies = [
     "pydantic==2.14.4",   # schemas + validation of model output and the report
     "pyyaml==6.0.4",      # reads config.yaml (limits, timeouts, model name)
     "openai==3.60.0",     # the only LLM SDK; imported in one file only
+    "python-dotenv==1.2.4",  # loads OPENAI_API_KEY from a local, git-ignored .env file
 ]
 
 [project.optional-dependencies]
