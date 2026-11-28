@@ -1,0 +1,74 @@
+{
+  "repo_url": "https://github.com/anxolerd/dvpwa",
+  "commit_sha": "4a8f4a43fafcc1b304f1b97d0f0a8dea755a7756",
+  "status": "completed",
+  "findings": [
+    {
+      "title": "CSRF middleware is disabled/commented out",
+      "severity": "high",
+      "file_path": "sqli/app.py",
+      "start_line": 23,
+      "end_line": 30,
+      "quote": "    app = Application(\n        debug=True,\n        middlewares=[\n            session_middleware,\n            # csrf_middleware,\n            error_middleware,\n        ]\n    )",
+      "explanation": "The CSRF middleware is defined (sqli/middlewares.py lines 25-38) but it is not enabled: in sqli/app.py the csrf_middleware entry in the Application middlewares list is commented out (lines 23-29 show middlewares=[ session_middleware, # csrf_middleware, error_middleware ]). The project does expose a csrf_token helper for templates (sqli/utils/jinja2.py), but without the middleware that verifies tokens on POST requests, CSRF tokens are not enforced. Several endpoints accept POST requests that change state (e.g. login, create student/course, submit reviews — sqli/views.py), so disabling the middleware leaves state-changing endpoints vulnerable to CSRF attacks.",
+      "remediation": "Re-enable and register the csrf_middleware in the application's middlewares list. Ensure that forms include the CSRF token from the csrf_processor and that the middleware verifies it on state-changing requests. Additionally, set SameSite cookie attributes and require authentication on sensitive actions to further mitigate CSRF."
+    },
+    {
+      "title": "Jinja2 templates autoescape disabled",
+      "severity": "high",
+      "file_path": "sqli/app.py",
+      "start_line": 33,
+      "end_line": 35,
+      "quote": "    setup_jinja(app, loader=PackageLoader('sqli', 'templates'),\n                context_processors=[csrf_processor, auth_user_processor],\n                autoescape=False)",
+      "explanation": "The code explicitly disables Jinja2 autoescaping when configuring templates: setup_jinja(..., autoescape=False) (sqli/app.py lines 33-35). The app renders templates using aiohttp_jinja2.template (sqli/views.py, multiple endpoints). Several endpoints accept and store user-supplied data (for example the review endpoint reads review_text from request POST and stores it — sqli/views.py lines 119-129). With autoescape disabled, any untrusted data rendered into templates will not be HTML-escaped by Jinja2 and can produce stored or reflected XSS. This is a direct site-wide template rendering risk and therefore a high-severity issue.",
+      "remediation": "Enable Jinja2 autoescaping or use context-sensitive escaping. Concretely: remove autoescape=False or set autoescape=True (or use jinja2.select_autoescape to enable escaping for HTML templates). Audit templates and only mark safe those values that are explicitly trusted. In addition, validate and/or sanitize untrusted input (e.g. use a schema or an HTML sanitizer such as bleach) before storing or rendering user content."
+    },
+    {
+      "title": "SQL injection via Python string interpolation in Student.create",
+      "severity": "high",
+      "file_path": "sqli/dao/student.py",
+      "start_line": 42,
+      "end_line": 43,
+      "quote": "q = (\"INSERT INTO students (name) \"\n             \"VALUES ('%(name)s')\" % {'name': name})",
+      "explanation": "Lines 42-43 build the SQL statement by performing Python string interpolation with the user-supplied name: q = (\"INSERT INTO students (name) \" \"VALUES ('%(name)s')\" % {'name': name}). The resulting query string is then executed with cur.execute(q) at line 45 with no parameterization. This allows an attacker to supply a value for name that injects arbitrary SQL (for example: name = \"a'); DROP TABLE students; --\") and have it executed by the database. Because attacker-controlled input reaches a SQL execution sink without proper parameterization or escaping, this is a real SQL injection vulnerability.",
+      "remediation": "Stop interpolating user input into the SQL string. Use parameterized queries provided by the DB API (pass the SQL with placeholders and the values as parameters) or use an ORM/prepared statements. For example (for most DB driver placeholder styles):\n\n- Using positional placeholders (common for MySQL/Python drivers):\n  q = \"INSERT INTO students (name) VALUES (%s)\"\n  await cur.execute(q, (name,))\n\n- Or using named-parameters if the driver supports it:\n  q = \"INSERT INTO students (name) VALUES (%(name)s)\"\n  await cur.execute(q, {'name': name})\n\nAlso validate input (length limits, allowed characters) where appropriate and apply least privilege to the DB user. Do not rely on manual escaping or Python string formatting to build SQL."
+    },
+    {
+      "title": "Session cookie accessible to JavaScript (httponly=False)",
+      "severity": "high",
+      "file_path": "sqli/middlewares.py",
+      "start_line": 20,
+      "end_line": 20,
+      "quote": "    storage = RedisStorage(app['redis'], httponly=False)",
+      "explanation": "The session middleware creates RedisStorage with httponly=False (sqli/middlewares.py line 20: storage = RedisStorage(app['redis'], httponly=False)). That makes the session cookie accessible to client-side JavaScript. If there is an XSS vulnerability (and this project disables template autoescaping, see sqli/app.py), an attacker can read and exfiltrate session cookies via JS. Exposing session cookies to scripts materially increases impact of any XSS, enabling session theft and account takeover, so this is high severity.",
+      "remediation": "Use httponly cookies for session storage: set httponly=True when creating the storage. Also set other secure cookie attributes: secure=True (send only over HTTPS), and appropriate SameSite (e.g. 'Lax' or 'Strict') as supported by the session storage. Example: RedisStorage(app['redis'], httponly=True, secure=True, samesite='Lax')."
+    },
+    {
+      "title": "User-supplied review_text inserted without validation/escaping",
+      "severity": "high",
+      "file_path": "sqli/views.py",
+      "start_line": 129,
+      "end_line": 129,
+      "quote": "            await Review.create(conn, course_id, review_text)",
+      "explanation": "The review handler reads user input and stores it without validation: on POST it does data = await request.post(); review_text = data.get('review_text') and then calls await Review.create(conn, course_id, review_text) (sqli/views.py lines 119-129). There is no schema validation used here (unlike other endpoints that use schemas). Combined with the global template autoescape being disabled (sqli/app.py lines 33-35), stored user content rendered later can result in stored XSS. Even if the DB write is parameterized, lack of validation/escaping before storage + disabled autoescape is sufficient to create XSS risk.",
+      "remediation": "Validate and sanitize review_text before storing. Apply an input schema (e.g. a REVIEW_SCHEMA) or at minimum strip or sanitize HTML using a library such as bleach, permitting only an allow-list of safe tags/attributes if HTML is required. Prefer escaping on render (enable Jinja2 autoescape) so untrusted strings are always escaped by the template engine. Ensure stored content is not treated as trusted, and only render trusted/trusted-and-sanitized content as safe."
+    }
+  ],
+  "coverage": {
+    "files_in_scope": 16,
+    "files_reviewed": 16,
+    "skipped_files": [],
+    "chunks_total": 2,
+    "chunks_reviewed": 2,
+    "chunks_failed": 0,
+    "model_calls_used": 9,
+    "model_calls_limit": 60,
+    "rejected_candidates": 1
+  },
+  "limitations": [
+    "Static review only: no code was executed, so findings are not proven exploitable at runtime.",
+    "Only Python (.py) files are reviewed; tests, virtual environments and build output are excluded.",
+    "37 non-Python file(s) were not reviewed."
+  ],
+  "errors": []
+}
