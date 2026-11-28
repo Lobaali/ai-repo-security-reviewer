@@ -536,3 +536,13 @@ checked against known issues.
   always listed in `skipped_files`).
 - **Test folders are excluded**, since test code is rarely deployed.
 ---
+## 13. Larger repositories
+
+Today, a repository larger than the limits is reviewed in risk order up to the limits and reported as partial. To review large repositories fully:
+
+- Cheap pre-scan first: run a deterministic scanner (e.g. Bandit or Semgrep) or simple searches for risky calls (subprocess, eval, pickle, SQL built with strings) to rank files by actual risky content instead of by name.
+- Parallel chunks: chunks are independent, so they can be analysed at the same time (within the API rate limit).
+- Cache by file hash: skip files unchanged since the last review.
+- Review only what changed: for pull requests, review the changed files and their callers.
+- Wider scope: add templates and config files to the tools (read-only) even when they are not themselves reviewed.
+---
