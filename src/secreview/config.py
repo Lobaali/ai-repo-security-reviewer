@@ -133,7 +133,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     # Load a local .env file if present. Existing environment variables win,
     # so an exported OPENAI_API_KEY is never overwritten by the file.
-    load_dotenv(override=False)
+    load_dotenv(Path.cwd() / ".env", override=False)
     api_key = os.environ.get("OPENAI_API_KEY")
 
     try:
