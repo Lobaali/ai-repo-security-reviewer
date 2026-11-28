@@ -3,9 +3,8 @@ config.py - loading and validating all settings in one place.
 
 Aim of this file
 ----------------
-Every tunable value (model name, timeouts, retries and the processing limits)
-is defined and validated here, then passed to the other components as a 
-`Settings` object. No other module reads files or environment
+Every tunable value (model name, timeouts, retries and the processing limits) is defined and validated here, then passed to the other
+components as a `Settings` object. No other module reads files or environment
 variables for configuration, which means:
   - tests can build a `Settings` with tiny limits directly in code;
   - changing a limit is a config edit, not a code change;
@@ -60,10 +59,10 @@ class Limits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_file_bytes: int = Field(default=100_000, gt=0)
-    max_files: int = Field(default=40, gt=0)
-    max_total_chars: int = Field(default=400_000, gt=0)
+    max_files: int = Field(default=200, gt=0)
+    max_total_chars: int = Field(default=500_000, gt=0)
     chunk_chars: int = Field(default=20_000, gt=0)
-    max_model_calls: int = Field(default=60, gt=0)
+    max_model_calls: int = Field(default=120, gt=0)
     investigator_max_tool_calls: int = Field(default=3, ge=0)
     reviewer_max_tool_calls: int = Field(default=5, ge=0)
     tool_output_max_chars: int = Field(default=4_000, gt=0)
@@ -131,7 +130,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
             # Secrets must never live in a config file that might be shared.
             raise ConfigError("do not put openai_api_key in the config file; use OPENAI_API_KEY")
 
-    # Load a local .env file if present. Existing environment variables win,
+    # Load .env from the CURRENT folder only, if present. (Called without a
+    # path, load_dotenv searches upward from this source file's folder, which
+    # could pick up an unrelated .env.) Existing environment variables win,
     # so an exported OPENAI_API_KEY is never overwritten by the file.
     load_dotenv(Path.cwd() / ".env", override=False)
     api_key = os.environ.get("OPENAI_API_KEY")

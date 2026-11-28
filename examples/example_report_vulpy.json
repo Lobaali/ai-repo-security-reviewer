@@ -1,0 +1,315 @@
+{
+  "repo_url": "https://github.com/fportantier/vulpy",
+  "commit_sha": "5249cc8b05a1c37f6b2f757b1cf16a509c327122",
+  "status": "completed",
+  "findings": [
+    {
+      "title": "Insecure file-based API key mechanism (predictable filename in /tmp)",
+      "severity": "high",
+      "file_path": "bad/libapi.py",
+      "start_line": 16,
+      "end_line": 22,
+      "quote": "    for f in Path('/tmp/').glob('vulpy.apikey.' + username + '.*'):\n        print('removing', f)\n        f.unlink()\n\n    keyfile = '/tmp/vulpy.apikey.{}.{}'.format(username, key)\n\n    Path(keyfile).touch()",
+      "explanation": "API keys are stored as predictable files under /tmp with filenames that include the username and the key itself: keyfile = '/tmp/vulpy.apikey.{}.{}'.format(username, key) and Path(keyfile).touch() (bad/libapi.py:20-22). The code also searches /tmp using predictable glob patterns. Placing secret material (the key) in filenames and in a world-readable temporary directory allows any local user to discover keys by listing /tmp. There is also a race condition during key creation/removal. These flaws allow disclosure and misuse of API keys, effectively breaking authentication.",
+      "remediation": "Do not use predictable filesystem objects in /tmp to represent secret credentials. Store keys in a dedicated, access-restricted store (database or keyring) or at minimum create files with owner-only permissions and unpredictable names, avoiding embedding the key in the filename. Use secure file creation (os.open with O_CREAT|O_EXCL and mode 0o600) and ensure proper ownership/permissions. Consider using signed tokens or a server-side session/token store instead of filesystem-based tokens."
+    },
+    {
+      "title": "Session cookie is unsigned base64 and can be tampered",
+      "severity": "high",
+      "file_path": "bad/libsession.py",
+      "start_line": 6,
+      "end_line": 7,
+      "quote": "    session = base64.b64encode(json.dumps({'username': username}).encode())\n    response.set_cookie('vulpy_session', session)",
+      "explanation": "The session cookie is created as base64-encoded JSON and set directly: session = base64.b64encode(json.dumps({'username': username}).encode()); response.set_cookie('vulpy_session', session) (bad/libsession.py:5-7). There is no signature, MAC, or encryption protecting the cookie. An attacker who can craft or modify cookies can base64-encode arbitrary JSON (e.g., {'username':'admin'}) and impersonate other users. This is a direct authentication/authorization bypass.",
+      "remediation": "Do not trust unsigned client-side session data. Use a secure, server-signed cookie mechanism (e.g., itsdangerous, Flask signed cookies, or similar), or store session state server-side and reference it with an opaque session identifier. Ensure cookies use Secure and HttpOnly flags and set appropriate SameSite attributes."
+    },
+    {
+      "title": "SQL injection in login query",
+      "severity": "high",
+      "file_path": "bad/libuser.py",
+      "start_line": 12,
+      "end_line": 12,
+      "quote": "user = c.execute(\"SELECT * FROM users WHERE username = '{}' and password = '{}'\".format(username, password)).fetchone()",
+      "explanation": "The login() function constructs an SQL query by formatting the username and password directly into the SQL string: user = c.execute(\"SELECT * FROM users WHERE username = '{}' and password = '{}'\".format(username, password)).fetchone() (bad/libuser.py:12). Both username and password are parameters to login() and therefore attacker-controllable. This allows classic SQL injection which can be used to bypass authentication or to read/modify data in the database.",
+      "remediation": "Use parameterized queries (bound parameters) instead of string formatting. Example: c.execute(\"SELECT * FROM users WHERE username = ? AND password = ?\", (username, password)).fetchone(). Also consider storing and comparing password hashes (not plaintext) and use prepared statements for all SQL operations."
+    },
+    {
+      "title": "SQL injection in user creation",
+      "severity": "high",
+      "file_path": "bad/libuser.py",
+      "start_line": 25,
+      "end_line": 25,
+      "quote": "c.execute(\"INSERT INTO users (username, password, failures, mfa_enabled, mfa_secret) VALUES ('%s', '%s', '%d', '%d', '%s')\" %(username, password, 0, 0, ''))",
+      "explanation": "The create() function inserts a user by interpolating username and password directly into SQL using %-formatting: c.execute(\"INSERT INTO users ... VALUES ('%s', '%s', ...)\" %(username, password, 0, 0, '')) (bad/libuser.py:25). The username and password come from the function parameters and are attacker-controlled. This is a SQL injection sink and can be abused to manipulate the database or escalate privileges.",
+      "remediation": "Use parameterized queries: c.execute(\"INSERT INTO users (username, password, failures, mfa_enabled, mfa_secret) VALUES (?, ?, ?, ?, ?)\", (username, password, 0, 0, '')). Also validate and sanitize inputs where appropriate and avoid inserting raw credentials (store password hashes)."
+    },
+    {
+      "title": "SQL injection in password update",
+      "severity": "high",
+      "file_path": "bad/libuser.py",
+      "start_line": 53,
+      "end_line": 53,
+      "quote": "c.execute(\"UPDATE users SET password = '{}' WHERE username = '{}'\".format(password, username))",
+      "explanation": "password_change() updates the database using string formatting with the provided username and password: c.execute(\"UPDATE users SET password = '{}' WHERE username = '{}'\".format(password, username)) (bad/libuser.py:53). Both parameters are attacker-controllable; this allows SQL injection that could change arbitrary rows or alter the database, enabling unauthorized account takeover.",
+      "remediation": "Use parameterized SQL to avoid injection: c.execute(\"UPDATE users SET password = ? WHERE username = ?\", (password, username)). In addition, store password hashes instead of plaintext passwords and add authorization checks to ensure only permitted actors can change a password."
+    },
+    {
+      "title": "State-changing GET without CSRF protection (disable MFA)",
+      "severity": "high",
+      "file_path": "bad/mod_mfa.py",
+      "start_line": 57,
+      "end_line": 63,
+      "quote": "@mod_mfa.route('/disable', methods=['GET'])\ndef do_mfa_disable():\n\n    if 'username' not in g.session:\n        return redirect('/user/login')\n\n    libmfa.mfa_disable(g.session['username'])",
+      "explanation": "bad/mod_mfa.py defines a route that performs a state-changing action (disabling MFA) as a GET request: @mod_mfa.route('/disable', methods=['GET']) and then calls libmfa.mfa_disable(g.session['username']) (lines 57-63). State-changing operations over GET without CSRF protection allow cross-site request forgery: an attacker can cause an authenticated user's browser to trigger the GET and disable MFA without the user's consent. The action requires the user to be authenticated, but disabling MFA is a high-impact operation.",
+      "remediation": "Change the route to use POST (or another non-idempotent verb) and require a CSRF token for the form/action. Validate the token on the server before performing the disable. Additionally, require re-authentication or confirmation (e.g. prompt for password or current OTP) for sensitive account changes, and verify Origin/Referer headers or use SameSite=strict/strict-ish cookie attributes to mitigate CSRF. Ensure such endpoints are protected by proper authorization checks."
+    },
+    {
+      "title": "Hardcoded weak SECRET_KEY in SSL web app",
+      "severity": "high",
+      "file_path": "bad/vulpy-ssl.py",
+      "start_line": 13,
+      "end_line": 13,
+      "quote": "app.config['SECRET_KEY'] = 'aaaaaaa'",
+      "explanation": "bad/vulpy-ssl.py sets a hardcoded, weak Flask SECRET_KEY: app.config['SECRET_KEY'] = 'aaaaaaa' (line 13). As with the other instance, a checked-in weak secret enables forging or tampering of Flask signed data (sessions, cookies) and can lead to account/session compromise if an attacker learns the key.",
+      "remediation": "Remove the hardcoded SECRET_KEY. Use a securely generated key (e.g. via Python's secrets module) and load it from an environment variable or secrets management system (app.config['SECRET_KEY'] = os.environ['SECRET_KEY']). Rotate the secret if it was used in any deployed environment and remove it from repository history."
+    },
+    {
+      "title": "Flask debug mode enabled and TLS files in /tmp (vulpy-ssl.py)",
+      "severity": "high",
+      "file_path": "bad/vulpy-ssl.py",
+      "start_line": 29,
+      "end_line": 29,
+      "quote": "app.run(debug=True, host='127.0.1.1', ssl_context=('/tmp/acme.cert', '/tmp/acme.key'))",
+      "explanation": "bad/vulpy-ssl.py calls app.run(debug=True, host='127.0.1.1', ssl_context=('/tmp/acme.cert', '/tmp/acme.key')) (line 29). This combines two issues: debug=True enables the interactive debugger (risk of code execution if exposed), and the TLS certificate and key are loaded from /tmp. /tmp is typically world-writable and not suitable for storing private keys; files there can be replaced or read by other local users/processes, risking key compromise and enabling impersonation or MITM.",
+      "remediation": "Turn off debug mode in production (debug=False) and run under a production WSGI server. Store TLS private keys in a secure, non-world-writable directory with correct filesystem permissions and ownership (not /tmp). Use a proper deployment process for certificates (e.g. system certificate stores, /etc/ssl/private) and ensure file permissions restrict access to the service account only. Consider using a dedicated TLS terminator (web server/load balancer) rather than app.run(... ssl_context=...)."
+    },
+    {
+      "title": "Hardcoded weak SECRET_KEY in web app",
+      "severity": "high",
+      "file_path": "bad/vulpy.py",
+      "start_line": 16,
+      "end_line": 16,
+      "quote": "app.config['SECRET_KEY'] = 'aaaaaaa'",
+      "explanation": "bad/vulpy.py sets a hardcoded, short Flask SECRET_KEY: app.config['SECRET_KEY'] = 'aaaaaaa' (line 16). A weak, checked-in SECRET_KEY allows attackers who obtain the source or the key to forge or tamper Flask-signed data (session cookies, other signatures) and can lead to authentication/session compromise. The code does not load the key from a secure source or environment variable, so the secret is exposed in the repository.",
+      "remediation": "Do not hardcode secrets in source. Generate a strong random secret (at least 32 bytes) with a CSPRNG (e.g. secrets.token_bytes(32) or secrets.token_hex(32)) and load it from a secure location such as an environment variable or a secrets manager. Example: app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') and set that environment variable to a securely generated value outside the repo. Remove the hardcoded value from the code and the repository history (rotate keys if previously deployed)."
+    },
+    {
+      "title": "Flask debug mode enabled (vulpy.py)",
+      "severity": "high",
+      "file_path": "bad/vulpy.py",
+      "start_line": 55,
+      "end_line": 55,
+      "quote": "app.run(debug=True, host='127.0.1.1', port=5000, extra_files='csp.txt')",
+      "explanation": "bad/vulpy.py calls app.run(debug=True, host='127.0.1.1', port=5000, extra_files='csp.txt') (line 55). Enabling Flask debug mode turns on the interactive debugger and reloader; the interactive debugger can execute arbitrary Python code if an attacker can reach it. Although the server is bound to a loopback address (127.0.1.1), running with debug=True in code is a dangerous practice and may be accidentally enabled in environments where it becomes reachable, or the host binding may be changed. This creates a high-risk vector for remote code execution if exposed.",
+      "remediation": "Disable debug mode in production: use debug=False and run the app under a proper WSGI server (gunicorn/uwsgi) behind a production web server. Control debug via environment variables in development only (e.g. FLASK_DEBUG) and ensure deployment scripts never enable it. Remove debug=True from code before committing or use configuration that sets debug only when explicitly in a development environment."
+    },
+    {
+      "title": "SQL injection via string formatting in user creation",
+      "severity": "high",
+      "file_path": "good/libuser.py",
+      "start_line": 61,
+      "end_line": 61,
+      "quote": "    c.execute(\"INSERT INTO users (username, password, salt, failures, mfa_enabled, mfa_secret) VALUES ('%s', '%s', '%s', '%d', '%d', '%s')\" %(username, '', '', 0, 0, ''))",
+      "explanation": "The user_create function constructs an SQL statement by interpolating the username directly into the SQL string: c.execute(\"INSERT INTO users (...) VALUES ('%s', ...)\" %(username, ...)) (good/libuser.py:61). This allows an attacker-controlled username to inject SQL (for example by including quotes and SQL commands), enabling data leakage, modification or schema changes. The application uses parameterized queries elsewhere (login uses a ? placeholder), so this is an obvious deviation and a real SQL injection vulnerability.",
+      "remediation": "Use parameterized queries instead of Python string interpolation. For sqlite3 use ? placeholders and pass values as a tuple, e.g.:\n\nc.execute(\n    \"INSERT INTO users (username, password, salt, failures, mfa_enabled, mfa_secret) VALUES (?,?,?,?,?,?)\",\n    (username, '', '', 0, 0, '')\n)\n\nAlso validate username input for allowed characters/length and handle database errors. Avoid composing SQL with untrusted strings."
+    },
+    {
+      "title": "Hardcoded weak SECRET_KEY",
+      "severity": "high",
+      "file_path": "good/vulpy-ssl.py",
+      "start_line": 13,
+      "end_line": 13,
+      "quote": "app.config['SECRET_KEY'] = 'aaaaaaa'",
+      "explanation": "good/vulpy-ssl.py sets app.config['SECRET_KEY'] = 'aaaaaaa' on line 13. The key is short, predictable and hardcoded. A weak or known SECRET_KEY allows attackers to forge or tamper with Flask-signed cookies and session data, enabling authentication bypass or privilege escalation. The presence of such an obviously weak key in the code is a serious authentication risk.",
+      "remediation": "Replace the weak hardcoded string with a strong, randomly generated secret stored outside version control. Load it from an environment variable or a secrets manager and ensure it has sufficient length and entropy (e.g. 32+ bytes of randomness encoded safely). Rotate the key if it may have been exposed."
+    },
+    {
+      "title": "Hardcoded SECRET_KEY in application",
+      "severity": "high",
+      "file_path": "good/vulpy.py",
+      "start_line": 17,
+      "end_line": 17,
+      "quote": "app.config['SECRET_KEY'] = '123aa8a93bdde342c871564a62282af857bda14b3359fde95d0c5e4b321610c1'",
+      "explanation": "good/vulpy.py sets app.config['SECRET_KEY'] to a long hardcoded value on line 17. Flask's SECRET_KEY is used to sign session cookies and other cryptographic operations; committing a fixed secret in source control means anyone with access to the repository can forge or tamper with signed cookies or other signed data. The hardcoded secret is directly present in the code (good/vulpy.py:17) and therefore is a valid secret leakage risk that can lead to authentication/session compromise.",
+      "remediation": "Remove the secret from source control and load it from a secure runtime source. For example, read SECRET_KEY from an environment variable or a secrets manager (e.g. app.config['SECRET_KEY'] = os.environ['FLASK_SECRET_KEY']) and ensure it is generated with sufficient entropy. Rotate the key if the repository was previously public or shared."
+    },
+    {
+      "title": "Private key written to world-writable /tmp",
+      "severity": "high",
+      "file_path": "utils/ca-create.py",
+      "start_line": 31,
+      "end_line": 32,
+      "quote": "with open('/tmp/ca.key', 'wb') as out:\n    out.write(pem_private)",
+      "explanation": "utils/ca-create.py writes an unencrypted private key to /tmp on lines 31-32 (with open('/tmp/ca.key', 'wb') as out: out.write(pem_private)). Writing an unencrypted private key to /tmp is dangerous because /tmp is generally world-readable/writable on multi-user systems; other local users could read or replace the file, exposing the private key and allowing impersonation or certificate forging. Since this key is a CA private key, compromise would have severe consequences.",
+      "remediation": "Do not write private keys to world-writable locations. Store generated private keys in a secure, access-restricted directory with strict file permissions (e.g. mode 0o600) and appropriate ownership. If the key must be persisted, encrypt it with a passphrase or use a secure key management solution. When creating temporary files use secure APIs (e.g. tempfile.NamedTemporaryFile with mode and delete semantics) and explicitly set permissions to restrict access."
+    },
+    {
+      "title": "Loading private key from predictable /tmp path with no passphrase",
+      "severity": "high",
+      "file_path": "utils/rsa-decrypt.py",
+      "start_line": 14,
+      "end_line": 19,
+      "quote": "with open(\"/tmp/acme.key\", \"rb\") as key_file:\n    private_key = serialization.load_pem_private_key(\n        key_file.read(),\n        password=None,\n        backend=default_backend()\n    )",
+      "explanation": "The decryption script loads a private key from a predictable /tmp path without a passphrase: serialization.load_pem_private_key(key_file.read(), password=None, ...) (utils/rsa-decrypt.py:14-19). Because the key is unencrypted and stored at /tmp/acme.key (predictable and often world-accessible), an attacker who can read or replace that file can obtain or substitute the private key, enabling decryption or signing of data.",
+      "remediation": "Protect private keys: store them in a secure location with restrictive permissions and require a passphrase to load them. For example, require the user to provide a passphrase and call load_pem_private_key(..., password=passphrase). Do not rely on /tmp for secret key storage. Validate the key's integrity/fingerprint if possible and restrict file permissions (0o600). Consider using a dedicated key store or OS-provided secure storage."
+    },
+    {
+      "title": "Private key written unencrypted to world-accessible /tmp",
+      "severity": "high",
+      "file_path": "utils/rsa-keygen.py",
+      "start_line": 26,
+      "end_line": 30,
+      "quote": "with open('/tmp/acme.key', 'wb') as out:\n    out.write(pem_private)\n\nwith open('/tmp/acme.pub', 'wb') as out:\n    out.write(pem_public)",
+      "explanation": "The key generation script writes the private key bytes unencrypted to a predictable world-writable path: with open('/tmp/acme.key', 'wb') as out: out.write(pem_private) (utils/rsa-keygen.py:26-27). The private key was produced with NoEncryption() (utils/rsa-keygen.py:18), so anyone with local access to /tmp (or who can replace that file) can read the private key. Exposure of a private key leads to full compromise of confidentiality and authenticity for data protected by that key.",
+      "remediation": "Do not write unencrypted private keys to /tmp. Options:\n- Encrypt the private key with a passphrase: use serialization.BestAvailableEncryption(passphrase) when calling private_bytes and protect the passphrase.\n- Write the file to a secure, non-shared location and set restrictive permissions (e.g. use os.open with mode 0o600 or call os.chmod to 0o600 immediately after creation).\n- Use a secure temporary directory with proper permissions or a key management service. Example:\n\nwith open(path, 'wb') as out:\n    out.write(pem_private)\nos.chmod(path, 0o600)\n\nAvoid /tmp for long-lived secrets."
+    },
+    {
+      "title": "Insecure storage of API key in world-writable /tmp file",
+      "severity": "medium",
+      "file_path": "bad/api_post.py",
+      "start_line": 26,
+      "end_line": 27,
+      "quote": "    with api_key_file.open('w') as outfile:\n            outfile.write(api_key)",
+      "explanation": "The client writes an API key to a predictable, world-accessible path without setting restrictive permissions: with api_key_file.open('w') as outfile: outfile.write(api_key) where api_key_file is Path('/tmp/supersecret.txt') (bad/api_post.py:6,26-27). Files in /tmp are readable by other local users/processes by default; writing secrets there without setting secure permissions allows local attackers to read or tamper with the key.",
+      "remediation": "Avoid writing secrets to world-accessible temporary files. If local storage is required, use a user-specific, permission-restricted location (e.g., a dotfile in the user's home directory with mode 0o600), or create the file with a secure umask and then chmod it to restrict access (os.open with O_CREAT|O_EXCL and mode 0o600, or tempfile.NamedTemporaryFile with appropriate permissions). Better: use a secure credential store/keyring where available."
+    },
+    {
+      "title": "Hardcoded plaintext credentials",
+      "severity": "medium",
+      "file_path": "bad/db_init.py",
+      "start_line": 9,
+      "end_line": 13,
+      "quote": "    users = [\n        ('admin', 'SuperSecret'),\n        ('elliot', '123123123'),\n        ('tim', '12345678')\n    ]",
+      "explanation": "The repository seeds user accounts with hardcoded plaintext passwords in db_init_users(): users = [('admin', 'SuperSecret'), ('elliot', '123123123'), ('tim', '12345678')] (bad/db_init.py:9-13). Hardcoded/plaintext credentials in source increase the risk that the credentials are reused in deployed systems or leaked via the repository, allowing account compromise.",
+      "remediation": "Do not store plaintext credentials in source. If sample accounts are required for development use, store only password hashes or generate random passwords at initialization and surface them securely to the operator. Keep real credentials out of the repository and use environment variables or a secrets management system for production credentials."
+    },
+    {
+      "title": "Database trace logging may leak sensitive data",
+      "severity": "medium",
+      "file_path": "bad/libmfa.py",
+      "start_line": 8,
+      "end_line": 8,
+      "quote": "    conn.set_trace_callback(print)",
+      "explanation": "bad/libmfa.py calls conn.set_trace_callback(print) (line 8 and line 23), which sends all SQL statements and parameters executed on that connection to stdout. That can leak sensitive data (MFA secrets, tokens, passwords, PII) into logs or console output. The trace callback is enabled in functions that access user MFA state (mfa_is_enabled and mfa_disable), increasing the chance sensitive details are printed.",
+      "remediation": "Remove set_trace_callback in production code. If query logging is needed for debugging, use a controlled logging mechanism (Python logging) with appropriate log levels and redaction of sensitive parameters, and enable it only in development. Ensure logs containing sensitive data are not written to publicly accessible locations and restrict access to logs. Prefer parameterized logging that doesn’t include secret values."
+    },
+    {
+      "title": "Unsafe cookie parsing and double-decoding bug",
+      "severity": "medium",
+      "file_path": "bad/libsession.py",
+      "start_line": 18,
+      "end_line": 20,
+      "quote": "            decoded = base64.b64decode(cookie.encode())\n            if decoded:\n                session = json.loads(base64.b64decode(cookie))",
+      "explanation": "The cookie parsing code decodes the cookie and then JSON-loads a second base64 decode: decoded = base64.b64decode(cookie.encode()); if decoded: session = json.loads(base64.b64decode(cookie)) (bad/libsession.py:18-20). This is a buggy and confusing double-decode pattern and it loads JSON directly from an untrusted cookie without validation. Even if the double-decode currently still yields the intended JSON, loading arbitrary JSON from a client-controlled cookie lets an attacker set arbitrary session fields (e.g., username) and impersonate users. The parsing bug may also cause inconsistent behavior depending on cookie formatting.",
+      "remediation": "Avoid parsing application state directly from client-provided cookies. Use signed cookies or server-side session storage. If client-side session data is necessary, ensure it is integrity-protected (HMAC or signature) and validated before use. Fix the parsing logic to be clear and robust (decode once, handle text/encoding explicitly) and validate JSON contents and types before trusting them."
+    },
+    {
+      "title": "SQL queries and data printed to stdout (trace enabled)",
+      "severity": "medium",
+      "file_path": "good/libposts.py",
+      "start_line": 10,
+      "end_line": 10,
+      "quote": "    conn.set_trace_callback(print)",
+      "explanation": "good/libposts.py calls conn.set_trace_callback(print) on lines 10 and 24. The SQLite trace callback will print executed SQL statements and bound parameters to stdout. That can leak sensitive data (including user-submitted text, usernames, or other PII) into application logs or console output. Exposed logs can be an information disclosure vector and may violate privacy requirements.",
+      "remediation": "Remove or disable the trace callback in production. Use structured logging with controlled log levels and ensure sensitive fields are redacted or never logged. If tracing is required for debugging, enable it only in development and behind a controlled debug flag; avoid printing raw SQL and parameters in production logs."
+    },
+    {
+      "title": "Database trace callback logs SQL and possibly sensitive data",
+      "severity": "medium",
+      "file_path": "good/libuser.py",
+      "start_line": 17,
+      "end_line": 20,
+      "quote": "    conn = sqlite3.connect('db_users.sqlite')\n    conn.set_trace_callback(print)\n    conn.row_factory = sqlite3.Row\n    c = conn.cursor()",
+      "explanation": "The code enables sqlite3 trace callbacks with conn.set_trace_callback(print) in login (good/libuser.py:17-19). That prints executed SQL statements and bound parameters to stdout/stderr. Because queries include values derived from users and the database (for example password hashes/salts fetched/used in the login flow), this may leak sensitive information into logs or console output.",
+      "remediation": "Remove or disable set_trace_callback in production code. If SQL tracing is required for debugging, enable it only in development behind a debug flag and ensure logs are not accessible to untrusted parties. Avoid printing bound parameters that include sensitive data; if tracing is needed, sanitize or redact sensitive fields before logging."
+    },
+    {
+      "title": "POST endpoint lacks CSRF protection",
+      "severity": "medium",
+      "file_path": "good/mod_welcome1.py",
+      "start_line": 20,
+      "end_line": 29,
+      "quote": "@mod_welcome.route('post', methods=['POST'])\ndef do_post():\n\n    if not session['username']:\n        return redirect('/user/login')\n\n    if request.method == 'POST':\n\n        username = session['username'] #request.form.get('username')\n        text = request.form.get('text')",
+      "explanation": "good/mod_welcome1.py defines a POST handler (decorated at line 20) that relies on the user's session to authorize creation of posts but contains no CSRF protection (no anti-CSRF token verification). Because the application authenticates users using cookies, a remote attacker could craft a cross-site request that causes an authenticated user's browser to submit a POST and create content on their behalf (CSRF). The code shown accepts form input (request.form.get('text')) and calls post(username, text) without CSRF checks.",
+      "remediation": "Implement CSRF protection for state-changing POST endpoints. Options include adding anti-CSRF tokens in forms and validating them on the server (e.g. Flask-WTF's CSRFProtect), setting the session/auth cookie SameSite=strict or Lax where appropriate, and validating Origin/Referer headers for sensitive requests. Do not rely solely on authentication cookies to prevent CSRF."
+    },
+    {
+      "title": "Flask debug mode with explicit SSL context",
+      "severity": "medium",
+      "file_path": "good/vulpy-ssl.py",
+      "start_line": 29,
+      "end_line": 29,
+      "quote": "app.run(debug=True, host='127.0.1.1', ssl_context=('/tmp/acme.cert', '/tmp/acme.key'))",
+      "explanation": "good/vulpy-ssl.py calls app.run(debug=True, host='127.0.1.1', ssl_context=('/tmp/acme.cert', '/tmp/acme.key')) on line 29. Running with debug=True enables the interactive debugger (which could lead to remote code execution if exposed) and debug mode should never be used in production. The code also references certificate and private key files under /tmp — storing private keys in /tmp is risky because /tmp is commonly world-writable and may allow local attackers to read or replace files.",
+      "remediation": "Disable Flask debug mode for any production run (debug=False) and run the application under a production WSGI server. Keep private keys in a secure directory with strict permissions (e.g. 0o600) or use a dedicated key storage solution; avoid placing private keys in world-writable directories such as /tmp. If temporary files are required, create them with secure permissions and ownership."
+    },
+    {
+      "title": "Flask debug mode enabled",
+      "severity": "medium",
+      "file_path": "good/vulpy.py",
+      "start_line": 53,
+      "end_line": 53,
+      "quote": "app.run(debug=True, host='127.0.1.1', port=5001, extra_files='csp.txt')",
+      "explanation": "good/vulpy.py calls app.run(debug=True, ...) on line 53. Enabling Flask debug mode activates the interactive debugger and detailed error pages which can execute arbitrary code if the debugger is exposed to an attacker. Even though the host is the loopback address ('127.0.1.1'), leaving debug=True in code risks accidental exposure in production or misconfiguration that makes the debugger reachable.",
+      "remediation": "Do not run the built-in Flask development server with debug=True in production. Use debug=False in code and run the app with a production WSGI server (e.g. gunicorn, uWSGI). Control the debug flag via environment configuration (FLASK_ENV or a dedicated variable) and ensure it defaults to disabled."
+    },
+    {
+      "title": "Weak key derivation: directly hashing password to produce AES key",
+      "severity": "medium",
+      "file_path": "utils/aes-decrypt.py",
+      "start_line": 20,
+      "end_line": 22,
+      "quote": "    digest = hashes.Hash(hashes.SHA256(), backend=default_backend())\n    digest.update(key.encode())\n    key_digest = digest.finalize()",
+      "explanation": "The AES decryption script derives an AES key by hashing the provided key string with a single SHA-256: digest.update(key.encode()); key_digest = digest.finalize() (utils/aes-decrypt.py:20-22). Deriving symmetric keys by a single hash without salt or iterations is weaker than using a dedicated password-based KDF (e.g. PBKDF2, scrypt, Argon2) and makes brute-force attacks significantly easier for low-entropy passphrases.",
+      "remediation": "Use a proper KDF with salt and work factor (iterations/memory): e.g. cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC, scrypt, or Argon2. Store and use a per-message/per-user salt and a sufficiently large iteration count or memory parameter. Example with PBKDF2HMAC:\n\nkdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000, backend=default_backend())\nkey = kdf.derive(password)\n\nThis substantially increases resistance to offline dictionary attacks."
+    },
+    {
+      "title": "Use of predictable /tmp path for public key (can be replaced by attacker)",
+      "severity": "medium",
+      "file_path": "utils/rsa-encrypt.py",
+      "start_line": 14,
+      "end_line": 18,
+      "quote": "with open(\"/tmp/acme.pub\", \"rb\") as key_file:\n    public_key = serialization.load_pem_public_key(\n        key_file.read(),\n        backend=default_backend()\n    )",
+      "explanation": "The RSA encryption script reads the public key from a predictable /tmp path: with open(\"/tmp/acme.pub\", \"rb\") as key_file: public_key = serialization.load_pem_public_key(...) (utils/rsa-encrypt.py:14-17). If an attacker with local write access can replace /tmp/acme.pub, they can cause the program to encrypt to an attacker-controlled public key and thereby obtain plaintexts that were intended for the real key owner.",
+      "remediation": "Do not load important public keys from world-writable temporary locations. Store public keys in a trusted, access-controlled location and verify the key fingerprint before use. If keys must be loaded from the filesystem, enforce strict file permissions and consider signature or fingerprint verification to ensure the key has not been tampered with."
+    },
+    {
+      "title": "Insecure OTP key generation and weak hash algorithm",
+      "severity": "medium",
+      "file_path": "utils/skey.py",
+      "start_line": 6,
+      "end_line": 9,
+      "quote": "ALGORITHM = 'sha1'\n\n#key = secrets.token_bytes(2048) # needs python 3.6\nkey = str(random.getrandbits(2048)).encode()",
+      "explanation": "utils/skey.py sets ALGORITHM = 'sha1' (line 6) and generates a key with random.getrandbits(2048) (line 9). The use of the non-cryptographic random module (random.getrandbits) instead of a CSPRNG (secrets) makes the initial seed potentially predictable. Additionally SHA-1 is considered cryptographically weak. Together these weaken the security of the OTP/key generation and could allow an attacker to predict or precompute values.",
+      "remediation": "Use a cryptographically secure RNG to generate keys (e.g. secrets.token_bytes or secrets.token_hex). Use a modern, secure hash algorithm such as SHA-256 (hashlib.sha256) or use established libraries/protocols for OTP (e.g. pyotp) which implement HMAC-based or time-based OTPs per RFCs. Example: ALGORITHM = 'sha256'; key = secrets.token_bytes(32). Avoid home-grown constructions for authentication/OTP whenever possible."
+    },
+    {
+      "title": "Temporary file created with delete=False, leaving sensitive data on disk",
+      "severity": "low",
+      "file_path": "utils/generate_bad_passwords.py",
+      "start_line": 18,
+      "end_line": 18,
+      "quote": "    temp_outfile = tempfile.NamedTemporaryFile(delete=False)",
+      "explanation": "The script creates a named temporary file with tempfile.NamedTemporaryFile(delete=False) (utils/generate_bad_passwords.py:18) and writes a large password list to it, leaving the file on disk after the program exits. Leaving temporary files containing sensitive or potentially sensitive data on disk increases the risk of disclosure to other local users or processes and may leave artifacts after the process terminates.",
+      "remediation": "Use a temporary file that is removed automatically (delete=True) or use TemporaryFile() which is removed on close and not visible in the filesystem. If delete=False is required, explicitly remove the file after use (os.remove(temp_outfile.name)) and set restrictive permissions when creating the file (e.g. use os.open to set 0o600). Avoid leaving sensitive data in temporary files when possible."
+    }
+  ],
+  "coverage": {
+    "files_in_scope": 57,
+    "files_reviewed": 57,
+    "skipped_files": [],
+    "chunks_total": 4,
+    "chunks_reviewed": 4,
+    "chunks_failed": 0,
+    "model_calls_used": 15,
+    "model_calls_limit": 120,
+    "rejected_candidates": 3
+  },
+  "limitations": [
+    "Static review only: no code was executed, so findings are not proven exploitable at runtime.",
+    "Only Python (.py) files are reviewed; tests, virtual environments and build output are excluded.",
+    "56 non-Python file(s) were not reviewed.",
+    "2 candidate(s) were judged not exploitable by the Reviewer."
+  ],
+  "errors": []
+}
