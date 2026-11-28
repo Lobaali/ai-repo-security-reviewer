@@ -137,7 +137,9 @@ Answer with a JSON object of this exact form:
 ]}}
 Evidence rules: quote the code exactly as written (do not paraphrase or shorten inside
 a line); the quote must cover exactly start_line..end_line; prefer the smallest range
-(1-5 lines) that shows the problem. If nothing is suspicious, return {{"candidates": []}}."""
+(1-5 lines) that shows the problem. Report each underlying issue once, at the line where
+it happens. Report security issues only, not general bugs or style problems.
+If nothing is suspicious, return {{"candidates": []}}."""
 
 REVIEWER_SYSTEM = f"""\
 You are the Reviewer in a static security review of a Python repository.
@@ -170,7 +172,11 @@ Answer with a JSON object of this exact form, with one decision per candidate id
     "explanation": "why this is (or is not) a security risk, citing the code you checked",
     "remediation": "how to fix it concretely"}}
 ]}}
-For rejected candidates set "confirmed": false and explain why in "explanation"."""
+For rejected candidates set "confirmed": false and explain why in "explanation".
+Reject (confirmed: false) functional or logic bugs that have no security impact, and
+candidates that repeat an issue already covered by another candidate.
+Write every explanation and remediation so it stands alone in a report: do not refer
+to candidate ids (such as c1), to "the next item", or to other findings."""
 
 _REPAIR_PROMPT = """\
 Your previous answer was not valid for the required JSON format:
